@@ -4,8 +4,11 @@ const fs = require('fs').promises;
 const path = require('path');
 const { pathToFileURL } = require('url');
 const axios = require('axios');
+const FormData = require('form-data');
+const sharp = require('sharp');
 const { Logger } = require('./logger');
 const { runFFmpeg, checkFFmpeg, ffmpegInstallHint } = require('./ffmpeg');
+const { appDataPath } = require('./app-paths');
 
 class AIVideoGenerator {
   constructor(credentials) {
@@ -13,6 +16,9 @@ class AIVideoGenerator {
     
     // Initialize AI services with graceful fallback
     const openaiKey = credentials.openai?.apiKey || process.env.OPENAI_API_KEY;
+    const cheaperInferenceKey = credentials.aiProvider?.provider === 'cheaperinference'
+      ? credentials.aiProvider.apiKey
+      : process.env.CHEAPER_INFERENCE_API_KEY;
     const replicateKey = credentials.replicate?.apiKey || process.env.REPLICATE_API_KEY;
     
     if (openaiKey) {
@@ -20,6 +26,12 @@ class AIVideoGenerator {
       this.logger.info('OpenAI service initialized');
     } else {
       this.logger.warn('OpenAI API key not found - AI features will be simulated');
+    }
+
+    if (cheaperInferenceKey) {
+      this.cheaperInferenceKey = cheaperInferenceKey;
+      this.cheaperInferenceImageModel = process.env.CHEAPER_INFERENCE_IMAGE_MODEL || 'grok-imagine';
+      this.logger.info(`Cheaper Inference image service initialized (model: ${this.cheaperInferenceImageModel})`);
     }
     
     if (replicateKey) {
@@ -48,12 +60,23 @@ class AIVideoGenerator {
     // Azure Speech configuration
     this.azureSpeechKey = credentials.azure?.speechKey || process.env.AZURE_SPEECH_KEY;
     this.azureSpeechRegion = credentials.azure?.speechRegion || process.env.AZURE_SPEECH_REGION;
+
+    // AI33 Pro / OpenSpeaker configuration
+    this.ai33ApiKey = credentials.ai33?.apiKey || process.env.AI33_API_KEY;
+    this.ai33VoiceId = credentials.ai33?.voiceId || process.env.AI33_VOICE_ID || 'edge_en-US-AriaNeural';
+    this.ai33Speed = Number(credentials.ai33?.speed || process.env.AI33_TTS_SPEED || 1);
+    this.ai33BaseUrl = (credentials.ai33?.baseUrl || process.env.AI33_BASE_URL || 'https://api.ai33.pro').replace(/\/$/, '');
   }
 
   async generateTTSAudio(text, outputPath) {
     this.logger.info('Generating TTS audio...');
     
     try {
+      // Prefer the configured BYO AI33 Pro account.
+      if (this.ai33ApiKey) {
+        return await this.generateAI33TTS(text, outputPath);
+      }
+
       // Try ElevenLabs first (higher quality)
       if (this.elevenLabsApiKey && this.elevenLabsVoiceId) {
         return await this.generateElevenLabsTTS(text, outputPath);
@@ -75,6 +98,87 @@ class AIVideoGenerator {
       this.logger.error('TTS generation failed:', error);
       throw error;
     }
+  }
+
+  async generateAI33TTS(text, outputPath) {
+    const form = new FormData();
+    form.append('text', text);
+    form.append('voice_id', this.ai33VoiceId);
+    form.append('speed', String(Math.min(1.5, Math.max(0.5, this.ai33Speed || 1))));
+    form.append('with_transcript', 'false');
+
+    const createResponse = await axios.post(`${this.ai33BaseUrl}/v3/text-to-speech`, form, {
+      headers: { ...form.getHeaders(), 'xi-api-key': this.ai33ApiKey },
+      maxBodyLength: Infinity,
+      timeout: 60000,
+    });
+    const taskId = createResponse.data?.task_id || createResponse.data?.data?.task_id;
+    if (!taskId) throw new Error('AI33 Pro did not return a TTS task id');
+
+    const task = await this.pollAI33Task(taskId);
+    const metadata = typeof task.metadata === 'string' ? JSON.parse(task.metadata) : (task.metadata || {});
+    const audioUrl = task.output_uri || metadata.audio_url;
+    if (!audioUrl) throw new Error('AI33 Pro completed the TTS task without an audio URL');
+
+    await this.downloadAudio(audioUrl, outputPath);
+    this.logger.info('AI33 Pro TTS generation complete');
+    return outputPath;
+  }
+
+  async pollAI33Task(taskId, { timeoutMs = 10 * 60 * 1000 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    let delayMs = 2500;
+
+    while (Date.now() < deadline) {
+      const response = await axios.get(`${this.ai33BaseUrl}/v1/task/${encodeURIComponent(taskId)}`, {
+        headers: { 'xi-api-key': this.ai33ApiKey },
+        timeout: 30000,
+        validateStatus: status => (status >= 200 && status < 300) || status === 429 || status === 503,
+      });
+
+      if (response.status === 429 || response.status === 503) {
+        const retrySeconds = Number(response.headers['retry-after']);
+        await new Promise(resolve => setTimeout(resolve, Number.isFinite(retrySeconds) ? retrySeconds * 1000 : delayMs));
+        delayMs = Math.min(Math.round(delayMs * 1.5), 15000);
+        continue;
+      }
+
+      const task = response.data?.data || response.data;
+      if (task.status === 'done') return task;
+      if (task.status === 'error' || task.status === 'failed') {
+        throw new Error(task.error_message || task.message || 'AI33 Pro task failed');
+      }
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+
+    throw new Error('AI33 Pro TTS task timed out');
+  }
+
+  async transcribeWithAI33(inputPath, { tagAudioEvents = true } = {}) {
+    if (!this.ai33ApiKey) throw new Error('AI33 Pro API key is not configured');
+    const form = new FormData();
+    form.append('file', require('fs').createReadStream(inputPath));
+    form.append('tag_audio_events', String(tagAudioEvents));
+
+    const response = await axios.post(`${this.ai33BaseUrl}/v1/task/speech-to-text`, form, {
+      headers: { ...form.getHeaders(), 'xi-api-key': this.ai33ApiKey },
+      maxBodyLength: Infinity,
+      timeout: 60000,
+    });
+    const taskId = response.data?.task_id || response.data?.data?.task_id;
+    if (!taskId) throw new Error('AI33 Pro did not return an STT task id');
+    return this.pollAI33Task(taskId);
+  }
+
+  async downloadAudio(url, outputPath) {
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    const response = await axios.get(url, { responseType: 'stream', timeout: 120000 });
+    const writer = require('fs').createWriteStream(outputPath);
+    response.data.pipe(writer);
+    await new Promise((resolve, reject) => {
+      writer.on('finish', resolve);
+      writer.on('error', reject);
+    });
   }
 
   async generateElevenLabsTTS(text, outputPath) {
@@ -166,7 +270,7 @@ class AIVideoGenerator {
     this.logger.info(`Generating ${count} visual assets with style: ${style}`);
 
     try {
-      if (!this.openai && !this.gemini) {
+      if (!this.openai && !this.cheaperInferenceKey && !this.gemini) {
         return await this.simulateVisualAssets(prompt, style, count);
       }
 
@@ -174,7 +278,7 @@ class AIVideoGenerator {
       const localPaths = [];
 
       for (let i = 0; i < count; i++) {
-        const imagePath = path.join(__dirname, '..', 'data', 'assets', `visual_${Date.now()}_${i}.png`);
+        const imagePath = appDataPath('data', 'assets', `visual_${Date.now()}_${i}.png`);
         await this.generateImage(enhancedPrompt, imagePath);
         localPaths.push(imagePath);
       }
@@ -192,6 +296,10 @@ class AIVideoGenerator {
 
     if (this.openai) {
       return await this.generateOpenAIImage(prompt, imagePath);
+    }
+
+    if (this.cheaperInferenceKey) {
+      return await this.generateCheaperInferenceImage(prompt, imagePath);
     }
 
     if (this.gemini) {
@@ -217,6 +325,28 @@ class AIVideoGenerator {
       await this.downloadImage(response.data[0].url, imagePath);
     }
 
+    return imagePath;
+  }
+
+  async generateCheaperInferenceImage(prompt, imagePath) {
+    const response = await axios.post('https://api.cheaperinference.com/v1/images/generations', {
+      model: this.cheaperInferenceImageModel,
+      prompt,
+      n: 1,
+      response_format: 'url',
+    }, {
+      headers: { Authorization: `Bearer ${this.cheaperInferenceKey}` },
+      timeout: 120000,
+    });
+
+    const result = response.data?.data?.[0];
+    if (result?.b64_json) {
+      await fs.writeFile(imagePath, Buffer.from(result.b64_json, 'base64'));
+    } else if (result?.url) {
+      await this.downloadImage(result.url, imagePath);
+    } else {
+      throw new Error('Cheaper Inference image generation returned no image');
+    }
     return imagePath;
   }
 
@@ -277,7 +407,7 @@ class AIVideoGenerator {
       }
       
       // Fallback to simple slideshow with Playwright
-      return await this.generateSlideshowVideo(script, visualAssets, audioPath, outputPath);
+      return await this.generateNativeSlideshowVideo(script, visualAssets, audioPath, outputPath);
     } catch (error) {
       this.logger.error('Video generation failed:', error);
       return await this.simulateVideoGeneration(script, visualAssets, audioPath, outputPath);
@@ -306,6 +436,97 @@ class AIVideoGenerator {
     }
 
     return outputPath;
+  }
+
+  async generateNativeSlideshowVideo(script, visualAssets, audioPath, outputPath) {
+    this.logger.info('Creating desktop-safe slideshow video...');
+    if (!(await checkFFmpeg())) throw new Error(ffmpegInstallHint());
+
+    const slidesDir = path.join(path.dirname(outputPath), 'slides');
+    await fs.mkdir(slidesDir, { recursive: true });
+    try {
+      const images = await this.filterLocalImageAssets(visualAssets);
+      const descriptors = this.buildSlideDescriptors(script, images);
+      const stills = [];
+      for (let index = 0; index < descriptors.length; index++) {
+        const stillPath = path.join(slidesDir, `slide_${String(index).padStart(3, '0')}.png`);
+        await this.renderSlideImage(descriptors[index], stillPath);
+        stills.push(stillPath);
+      }
+      const videoPath = outputPath.replace('.mp4', '_visual.mp4');
+      await this.renderSlidesToVideo(stills, this.calculateScriptDuration(script), videoPath);
+      await this.addAudioToVideo(videoPath, audioPath, outputPath);
+      return outputPath;
+    } finally {
+      await this.cleanupDirectory(slidesDir);
+    }
+  }
+
+  async filterLocalImageAssets(visualAssets = []) {
+    const allowed = new Set(['.png', '.jpg', '.jpeg', '.webp']);
+    const images = [];
+    for (const asset of visualAssets) {
+      if (typeof asset !== 'string' || !allowed.has(path.extname(asset).toLowerCase())) continue;
+      try { await fs.access(asset); images.push(asset); } catch (error) { /* missing asset */ }
+    }
+    return images;
+  }
+
+  buildSlideDescriptors(script, images) {
+    const slides = [{ title: script.title || 'New Video', body: process.env.CHANNEL_NAME || 'CreatorPilot', background: images[0] }];
+    for (const [index, section] of (script.mainContent?.sections || []).entries()) {
+      const items = section.items || section.steps || [];
+      const body = items.length
+        ? items.slice(0, 3).map(item => item.title || item.description || String(item)).join('\n')
+        : String(section.content || '').slice(0, 260);
+      slides.push({
+        title: section.title || `Part ${index + 1}`,
+        body,
+        background: images[Math.min(index + 1, Math.max(0, images.length - 1))],
+      });
+    }
+    slides.push({ title: 'Thanks for watching', body: 'Subscribe for the next video', background: images.at(-1) });
+    return slides;
+  }
+
+  async renderSlideImage(slide, outputPath) {
+    const width = 1920;
+    const height = 1080;
+    const layers = [];
+    if (slide.background) {
+      try {
+        const background = await sharp(slide.background).resize(width, height, { fit: 'cover' }).modulate({ brightness: 0.55, saturation: 0.85 }).png().toBuffer();
+        layers.push({ input: background });
+      } catch (error) {
+        this.logger.warn(`Unable to use slide background: ${error.message}`);
+      }
+    }
+    layers.push({ input: Buffer.from(`<svg width="${width}" height="${height}"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#07101d" stop-opacity=".45"/><stop offset="1" stop-color="#102d46" stop-opacity=".78"/></linearGradient></defs><rect width="100%" height="100%" fill="url(#g)"/></svg>`) });
+    const titleLines = this.wrapSlideText(slide.title, 34, 3);
+    const bodyLines = this.wrapSlideText(slide.body, 55, 5);
+    const titleSvg = titleLines.map((line, index) => `<text x="960" y="${410 + index * 88}" text-anchor="middle" fill="#fff" font-family="Segoe UI,Arial" font-size="76" font-weight="700">${this.escapeSvg(line)}</text>`).join('');
+    const bodyStart = 410 + titleLines.length * 88 + 35;
+    const bodySvg = bodyLines.map((line, index) => `<text x="960" y="${bodyStart + index * 52}" text-anchor="middle" fill="#d5e5f8" font-family="Segoe UI,Arial" font-size="36">${this.escapeSvg(line)}</text>`).join('');
+    layers.push({ input: Buffer.from(`<svg width="${width}" height="${height}">${titleSvg}${bodySvg}<rect x="860" y="910" width="200" height="6" rx="3" fill="#4de3d1"/></svg>`) });
+    await sharp({ create: { width, height, channels: 4, background: '#0b1c2e' } }).composite(layers).png().toFile(outputPath);
+  }
+
+  wrapSlideText(value, maxCharacters, maxLines) {
+    const words = String(value || '').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+    const lines = [];
+    for (const word of words) {
+      const current = lines.at(-1);
+      if (!current || `${current} ${word}`.length > maxCharacters) lines.push(word);
+      else lines[lines.length - 1] = `${current} ${word}`;
+    }
+    const truncated = lines.length > maxLines;
+    lines.length = Math.min(lines.length, maxLines);
+    if (truncated && lines.length) lines[lines.length - 1] += '…';
+    return lines.length ? lines : [''];
+  }
+
+  escapeSvg(value) {
+    return String(value).replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[character]);
   }
 
   async generateSlideshowVideo(script, visualAssets, audioPath, outputPath) {
@@ -716,12 +937,12 @@ class AIVideoGenerator {
     this.logger.info('Generating custom thumbnail...');
 
     try {
-      if (!this.openai && !this.gemini) {
+      if (!this.openai && !this.cheaperInferenceKey && !this.gemini) {
         return await this.simulateThumbnailGeneration(script, style);
       }
 
       const prompt = `YouTube thumbnail for "${script.title}", ${style} style, eye-catching, high contrast text, professional design, clickable, engaging`;
-      const thumbnailPath = path.join(__dirname, '..', 'uploads', 'thumbnails', `thumbnail_${Date.now()}.png`);
+      const thumbnailPath = appDataPath('uploads', 'thumbnails', `thumbnail_${Date.now()}.png`);
 
       await this.generateImage(prompt, thumbnailPath);
 
@@ -760,7 +981,7 @@ class AIVideoGenerator {
     
     const paths = [];
     for (let i = 0; i < count; i++) {
-      const assetPath = path.join(__dirname, '..', 'data', 'assets', `visual_sim_${Date.now()}_${i}.info`);
+      const assetPath = appDataPath('data', 'assets', `visual_sim_${Date.now()}_${i}.info`);
       
       await fs.writeFile(assetPath, JSON.stringify({
         message: 'AI visual asset would be generated here',
@@ -793,7 +1014,7 @@ class AIVideoGenerator {
   async simulateThumbnailGeneration(script, style) {
     this.logger.info('Simulating thumbnail generation...');
     
-    const thumbnailPath = path.join(__dirname, '..', 'uploads', 'thumbnails', `thumbnail_sim_${Date.now()}.info`);
+    const thumbnailPath = appDataPath('uploads', 'thumbnails', `thumbnail_sim_${Date.now()}.info`);
     await fs.mkdir(path.dirname(thumbnailPath), { recursive: true });
     
     await fs.writeFile(thumbnailPath, JSON.stringify({

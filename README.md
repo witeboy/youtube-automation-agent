@@ -1,5 +1,7 @@
 # YouTube Automation Agent
 
+> **Windows desktop edition:** this repository now includes **CreatorPilot**, an installable BYO-key desktop app with encrypted local settings, Cheaper Inference text/image generation, AI33 Pro TTS/STT support, browser-based YouTube OAuth, and per-user application data. See [DESKTOP_GUIDE.md](DESKTOP_GUIDE.md), run `npm run desktop` for development, or `npm run dist:win` to build the installer.
+
 ## What's New in v2.4
 
 - **Guided walkthrough for first-time setup** — `npm run walkthrough` (also offered when you run `npm run setup`). It explains every choice in plain English, shows exactly where to get each key (and opens the page in your browser), **live-tests keys the moment you paste them**, walks you click-by-click through Google Cloud for the YouTube connection, and signs you in via your browser instead of copy-pasting auth codes. Every step is skippable and progress is saved — re-run it any time.

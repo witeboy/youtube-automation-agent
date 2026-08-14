@@ -1,5 +1,6 @@
 const cron = require('node-cron');
 const { Logger } = require('../utils/logger');
+const { appDataPath } = require('../utils/app-paths');
 
 class DailyAutomation {
   constructor(agents, database) {
@@ -421,8 +422,8 @@ class DailyAutomation {
     const fs = require('fs').promises;
     const path = require('path');
     
-    const tempDir = path.join(__dirname, '..', 'temp');
-    const uploadsDir = path.join(__dirname, '..', 'uploads');
+    const tempDir = appDataPath('temp');
+    const uploadsDir = appDataPath('uploads');
     
     try {
       await this.cleanDirectoryOldFiles(tempDir, 7);

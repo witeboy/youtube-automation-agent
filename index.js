@@ -24,9 +24,11 @@ class YouTubeAutomationAgent {
     this.agents = {};
     this.app = express();
     this.isInitialized = false;
+    this.apiConfigured = false;
+    this.server = null;
   }
 
-  async initialize() {
+  async initialize({ allowUnconfigured = false } = {}) {
     try {
       console.log(chalk.cyan.bold(`\n🎬 YouTube Automation Agent v${version}`));
       console.log(chalk.gray('─'.repeat(50)));
@@ -44,7 +46,8 @@ class YouTubeAutomationAgent {
       if (!credentialsValid) {
         console.log(chalk.yellow('\n⚠️  Some credentials are missing or invalid.'));
         console.log(chalk.yellow('Run: npm run credentials:setup'));
-        return false;
+        this.setupAPI();
+        return allowUnconfigured;
       }
       
       // Initialize agents
@@ -96,11 +99,16 @@ class YouTubeAutomationAgent {
 
     const hasText = this.credentials.hasAITextProvider();
     const hasGemini = Boolean(creds.gemini?.apiKey || process.env.GEMINI_API_KEY);
-    const hasImages = Boolean(creds.openai?.apiKey || process.env.OPENAI_API_KEY || hasGemini);
+    const hasImages = Boolean(
+      creds.openai?.apiKey || process.env.OPENAI_API_KEY ||
+      creds.aiProvider?.provider === 'cheaperinference' || process.env.CHEAPER_INFERENCE_API_KEY ||
+      hasGemini
+    );
     const hasTTS = Boolean(
       creds.openai?.apiKey || process.env.OPENAI_API_KEY ||
       creds.elevenLabs?.apiKey || process.env.ELEVENLABS_API_KEY ||
       creds.azureSpeech?.subscriptionKey || process.env.AZURE_SPEECH_KEY ||
+      creds.ai33?.apiKey || process.env.AI33_API_KEY ||
       hasGemini
     );
     const hasFFmpeg = await checkFFmpeg();
@@ -198,6 +206,8 @@ class YouTubeAutomationAgent {
     return { valid: true, value };
   }
   setupAPI() {
+    if (this.apiConfigured) return;
+    this.apiConfigured = true;
     this.app.use(express.json({ limit: '1mb' }));
     this.app.use(express.static(path.join(__dirname, 'dashboard')));
 
@@ -215,6 +225,7 @@ class YouTubeAutomationAgent {
       res.json({
         status: 'healthy',
         initialized: this.isInitialized,
+        configured: this.isInitialized,
         agents: Object.keys(this.agents),
         uptime: process.uptime(),
         timestamp: new Date().toISOString()
@@ -224,6 +235,9 @@ class YouTubeAutomationAgent {
     // Manual content generation
     this.app.post('/generate', this.requireAPIKey(), async (req, res) => {
       try {
+        if (!this.isInitialized) {
+          return res.status(503).json({ success: false, error: 'Complete Settings before generating content' });
+        }
         const validation = this.validateGenerateRequestBody(req.body);
         if (!validation.valid) {
           return res.status(validation.status).json({ success: false, error: validation.error });
@@ -240,6 +254,7 @@ class YouTubeAutomationAgent {
     // Get analytics
     this.app.get('/analytics', async (req, res) => {
       try {
+        if (!this.agents.analytics) return res.status(503).json({ error: 'Application is not configured' });
         const analytics = await this.agents.analytics.getRecentAnalytics();
         res.json(analytics);
       } catch (error) {
@@ -260,6 +275,7 @@ class YouTubeAutomationAgent {
     // Manual publish
     this.app.post('/publish/:contentId', this.requireAPIKey(), async (req, res) => {
       try {
+        if (!this.agents.publishing) return res.status(503).json({ success: false, error: 'Application is not configured' });
         const { contentId } = req.params;
         const result = await this.agents.publishing.publishContent(contentId);
         res.json({ success: true, result });
@@ -315,16 +331,16 @@ class YouTubeAutomationAgent {
     };
   }
 
-  async start() {
-    const initialized = await this.initialize();
+  async start(options = {}) {
+    const initialized = await this.initialize({ allowUnconfigured: Boolean(options.allowUnconfigured) });
     
     if (!initialized) {
       console.log(chalk.red('\n❌ Failed to initialize. Please check your configuration.'));
-      process.exit(1);
+      return null;
     }
     
-    const PORT = process.env.PORT || 3456;
-    this.app.listen(PORT, () => {
+    const PORT = options.port ?? process.env.PORT ?? 3456;
+    this.server = this.app.listen(PORT, '127.0.0.1', () => {
       console.log(chalk.green(`\n✅ YouTube Automation Agent running on port ${PORT}`));
       console.log(chalk.gray('─'.repeat(50)));
       console.log(chalk.white('📊 Dashboard: ') + chalk.cyan(`http://localhost:${PORT}`));
@@ -334,6 +350,22 @@ class YouTubeAutomationAgent {
       console.log(chalk.gray('─'.repeat(50)));
       console.log(chalk.yellow('\n🤖 Automation is active. Content will be generated and posted daily.'));
     });
+    await new Promise((resolve, reject) => {
+      if (this.server.listening) return resolve();
+      this.server.once('listening', resolve);
+      this.server.once('error', reject);
+    });
+    const address = this.server.address();
+    return { server: this.server, port: typeof address === 'object' ? address.port : PORT };
+  }
+
+  async stop() {
+    if (this.scheduler) await this.scheduler.stopAutomation();
+    if (this.server) {
+      await new Promise(resolve => this.server.close(resolve));
+      this.server = null;
+    }
+    if (this.db) await this.db.close();
   }
 }
 

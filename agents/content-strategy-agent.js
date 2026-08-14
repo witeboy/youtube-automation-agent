@@ -1,4 +1,3 @@
-const axios = require('axios');
 const { Logger } = require('../utils/logger');
 const { AITextService } = require('../utils/ai-text-service');
 
@@ -48,10 +47,9 @@ class ContentStrategyAgent {
   }
 
   async fetchYouTubeTrends() {
-    // Use YouTube API to fetch trending videos
-    const youtube = this.credentials.getYouTubeClient();
-    
     try {
+      // Use YouTube API when connected; local-only users receive evergreen topics.
+      const youtube = this.credentials.getYouTubeClient();
       const response = await youtube.videos.list({
         part: 'snippet,statistics',
         chart: 'mostPopular',
@@ -67,7 +65,7 @@ class ContentStrategyAgent {
         publishedAt: video.snippet.publishedAt
       }));
     } catch (error) {
-      this.logger.error('Failed to fetch YouTube trends:', error);
+      this.logger.warn('YouTube trends unavailable; using local topic research');
       return [];
     }
   }

@@ -26,8 +26,7 @@ class PublishingSchedulingAgent {
       this.youtube = google.youtube({ version: 'v3', auth });
       this.logger.info('YouTube API initialized');
     } catch (error) {
-      this.logger.error('Failed to initialize YouTube API:', error);
-      throw error;
+      this.logger.warn('YouTube is not connected; local generation and queueing remain available');
     }
   }
 
@@ -114,6 +113,7 @@ class PublishingSchedulingAgent {
   }
 
   async uploadToYouTube(scheduleEntry) {
+    if (!this.youtube) throw new Error('Connect a YouTube channel in Settings before publishing');
     const { metadata } = scheduleEntry;
     
     // Prepare video metadata

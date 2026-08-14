@@ -25,6 +25,7 @@ module.exports = [
       globals: {
         __dirname: 'readonly',
         Buffer: 'readonly',
+        clearTimeout: 'readonly',
         clearInterval: 'readonly',
         console: 'readonly',
         module: 'readonly',

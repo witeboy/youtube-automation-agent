@@ -304,6 +304,11 @@ class SystemTest {
         throw new Error('OpenRouter configuration was incorrectly reported as missing credentials');
       }
 
+      manager.credentials = { aiProvider: { provider: 'cheaperinference', apiKey: 'ir_live_test' } };
+      if (manager.getMissingCredentials().length !== 0) {
+        throw new Error('Cheaper Inference configuration was incorrectly reported as missing credentials');
+      }
+
       manager.credentials = { youtube: { client_id: 'x' } };
       const missingProvider = manager.getMissingCredentials();
       if (missingProvider.length !== 1 || !/AI provider/.test(missingProvider[0])) {
@@ -311,9 +316,9 @@ class SystemTest {
       }
 
       manager.credentials = { openai: { apiKey: 'sk-test' } };
-      const missingYouTube = manager.getMissingCredentials();
-      if (missingYouTube.length !== 1 || missingYouTube[0] !== 'youtube') {
-        throw new Error('Missing YouTube credentials were not detected');
+      const localOnly = manager.getMissingCredentials();
+      if (localOnly.length !== 0) {
+        throw new Error('YouTube was incorrectly required for local video generation');
       }
     } finally {
       for (const key of envKeys) {

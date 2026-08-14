@@ -1,10 +1,14 @@
 {
   "name": "youtube-automation-agent",
   "version": "2.4.1",
-  "description": "Fully automated YouTube channel management system with specialized AI agents",
-  "main": "index.js",
+  "description": "BYO-key desktop studio for automated YouTube video creation and publishing",
+  "productName": "CreatorPilot",
+  "main": "desktop/main.js",
   "scripts": {
     "start": "node index.js",
+    "desktop": "electron .",
+    "postinstall": "electron-builder install-app-deps",
+    "dist:win": "electron-builder --win nsis",
     "setup": "node setup.js",
     "walkthrough": "node walkthrough.js",
     "scheduler": "node schedules/daily-automation.js",
@@ -20,7 +24,6 @@
     "lint": "eslint ."
   },
   "dependencies": {
-    "@google-cloud/local-auth": "^3.0.0",
     "@google/genai": "^2.9.0",
     "axios": "^1.7.0",
     "chalk": "^4.1.2",
@@ -29,25 +32,61 @@
     "form-data": "^4.0.4",
     "googleapis": "^173.0.0",
     "inquirer": "^8.2.6",
-    "microsoft-cognitiveservices-speech-sdk": "^1.45.0",
-    "moment": "^2.29.4",
-    "node-cron": "^3.0.2",
+    "node-cron": "^4.6.0",
     "openai": "^6.0.0",
-    "playwright": "^1.54.2",
     "replicate": "^1.4.0",
-    "sqlite3": "^5.1.6",
+    "sqlite3": "^6.0.1",
     "winston": "^3.11.0",
-    "sharp": "^0.33.0"
+    "sharp": "^0.35.3"
   },
   "optionalDependencies": {
     "ffmpeg-static": "^5.2.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.2",
+    "electron": "43.4.0",
+    "electron-builder": "26.15.3",
     "eslint": "9.39.4",
     "@eslint/js": "9.39.4"
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "build": {
+    "appId": "com.creatorpilot.youtube",
+    "productName": "CreatorPilot",
+    "directories": { "buildResources": "build" },
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**/*",
+      "node_modules/sqlite3/**/*",
+      "node_modules/sharp/**/*",
+      "node_modules/@img/**/*"
+    ],
+    "files": [
+      "agents/**/*",
+      "dashboard/**/*",
+      "database/**/*",
+      "desktop/**/*",
+      "schedules/**/*",
+      "utils/**/*",
+      "index.js",
+      "package.json",
+      "!**/*.map",
+      "!**/test{,s}/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.png",
+      "artifactName": "CreatorPilot-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "CreatorPilot"
+    }
   }
 }

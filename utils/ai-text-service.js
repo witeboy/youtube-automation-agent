@@ -16,6 +16,14 @@ const PROVIDERS = {
     models: ['openai/gpt-5.5', 'anthropic/claude-opus-4-8', 'google/gemini-3.5-flash', 'moonshotai/kimi-k2.6', 'zhipu/glm-5'],
     envKey: 'OPENROUTER_API_KEY',
   },
+  cheaperinference: {
+    name: 'Cheaper Inference',
+    baseURL: 'https://api.cheaperinference.com/v1',
+    defaultModel: 'gpt-5-mini',
+    models: ['gpt-5-mini', 'claude-sonnet-4.6', 'gemini-3-flash-preview'],
+    envKey: 'CHEAPER_INFERENCE_API_KEY',
+    modelEnv: 'CHEAPER_INFERENCE_MODEL',
+  },
   kimi: {
     name: 'Kimi (Moonshot AI)',
     baseURL: 'https://api.moonshot.ai/v1',
@@ -62,7 +70,7 @@ class AITextService {
     for (const [, preset] of Object.entries(PROVIDERS)) {
       const key = process.env[preset.envKey];
       if (key) {
-        return this._initOpenAICompatible(preset, key);
+        return this._initOpenAICompatible(preset, key, preset.modelEnv ? process.env[preset.modelEnv] : undefined);
       }
     }
 

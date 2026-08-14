@@ -2,10 +2,11 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('fs').promises;
 const { Logger } = require('../utils/logger');
+const { appDataPath } = require('../utils/app-paths');
 
 class Database {
   constructor() {
-    this.dbPath = path.join(__dirname, '..', 'data', 'youtube_automation.db');
+    this.dbPath = appDataPath('data', 'youtube_automation.db');
     this.db = null;
     this.logger = new Logger('Database');
   }

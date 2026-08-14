@@ -4,12 +4,13 @@ const { google } = require('googleapis');
 const inquirer = require('inquirer');
 const chalk = require('chalk');
 const { Logger } = require('./logger');
+const { appDataPath } = require('./app-paths');
 
 class CredentialManager {
   constructor() {
     this.logger = new Logger('CredentialManager');
-    this.credentialsPath = path.join(__dirname, '..', 'config', 'credentials.json');
-    this.tokensPath = path.join(__dirname, '..', 'config', 'tokens.json');
+    this.credentialsPath = appDataPath('config', 'credentials.json');
+    this.tokensPath = appDataPath('config', 'tokens.json');
     this.credentials = {};
     this.tokens = {};
   }
@@ -32,6 +33,13 @@ class CredentialManager {
     } catch (error) {
       this.credentials = {};
     }
+    if (process.env.YAA_CREDENTIALS_JSON) {
+      try {
+        this.credentials = { ...this.credentials, ...JSON.parse(process.env.YAA_CREDENTIALS_JSON) };
+      } catch (error) {
+        this.logger.warn('Ignoring invalid in-memory desktop credentials');
+      }
+    }
   }
 
   async loadTokens() {
@@ -40,6 +48,13 @@ class CredentialManager {
       this.tokens = JSON.parse(data);
     } catch (error) {
       this.tokens = {};
+    }
+    if (process.env.YAA_TOKENS_JSON) {
+      try {
+        this.tokens = { ...this.tokens, ...JSON.parse(process.env.YAA_TOKENS_JSON) };
+      } catch (error) {
+        this.logger.warn('Ignoring invalid in-memory desktop tokens');
+      }
     }
   }
 
@@ -533,12 +548,8 @@ class CredentialManager {
   getMissingCredentials() {
     const missing = [];
 
-    if (!this.credentials.youtube) {
-      missing.push('youtube');
-    }
-
     if (!this.hasAITextProvider()) {
-      missing.push('an AI provider (OpenAI, Gemini, OpenRouter, Kimi, MiMo, or GLM)');
+      missing.push('an AI provider (Cheaper Inference, OpenAI, Gemini, OpenRouter, Kimi, MiMo, or GLM)');
     }
 
     return missing;
@@ -561,9 +572,9 @@ class CredentialManager {
     }
 
     // Validate YouTube tokens
-    if (!this.tokens.youtube) {
+    if (this.credentials.youtube && !this.tokens.youtube) {
       console.log(chalk.yellow('\n⚠️  YouTube authentication required'));
-      return false;
+      return true;
     }
 
     return true;
