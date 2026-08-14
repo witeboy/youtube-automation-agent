@@ -1,6 +1,10 @@
 const http = require('http');
+const crypto = require('crypto');
 const { google } = require('googleapis');
 const { shell } = require('electron');
+
+const GOOGLE_OAUTH_PORT = 53682;
+const GOOGLE_OAUTH_REDIRECT_URI = `http://127.0.0.1:${GOOGLE_OAUTH_PORT}/oauth2callback`;
 
 const SCOPES = [
   'https://www.googleapis.com/auth/youtube.upload',
@@ -14,11 +18,12 @@ async function connectYouTube(clientId, clientSecret) {
   return new Promise((resolve, reject) => {
     let settled = false;
     let timer;
+    const expectedState = crypto.randomBytes(32).toString('hex');
     const finish = (error, value) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      server.close();
+      if (server.listening) server.close();
       if (error) reject(error); else resolve(value);
     };
 
@@ -30,16 +35,22 @@ async function connectYouTube(clientId, clientSecret) {
       }
       const oauthError = requestUrl.searchParams.get('error');
       const code = requestUrl.searchParams.get('code');
+      const returnedState = requestUrl.searchParams.get('state');
       if (oauthError || !code) {
         res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end('<h1>YouTube connection failed</h1><p>You may close this window.</p>');
         finish(new Error(oauthError || 'Google returned no authorization code'));
         return;
       }
+      if (returnedState !== expectedState) {
+        res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end('<h1>YouTube connection failed</h1><p>The authorization response could not be verified. You may close this window.</p>');
+        finish(new Error('Google OAuth state verification failed. Please try connecting again.'));
+        return;
+      }
 
       try {
-        const redirectUri = `http://127.0.0.1:${server.address().port}/oauth2callback`;
-        const oauth = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
+        const oauth = new google.auth.OAuth2(clientId, clientSecret, GOOGLE_OAUTH_REDIRECT_URI);
         const { tokens } = await oauth.getToken(code);
         oauth.setCredentials(tokens);
         const youtube = google.youtube({ version: 'v3', auth: oauth });
@@ -55,10 +66,21 @@ async function connectYouTube(clientId, clientSecret) {
       }
     });
 
-    server.listen(0, '127.0.0.1', async () => {
-      const redirectUri = `http://127.0.0.1:${server.address().port}/oauth2callback`;
-      const oauth = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
-      const authUrl = oauth.generateAuthUrl({ access_type: 'offline', prompt: 'consent', scope: SCOPES });
+    server.once('error', error => {
+      const message = error.code === 'EADDRINUSE'
+        ? `CreatorPilot could not open its Google callback port ${GOOGLE_OAUTH_PORT}. Close any other CreatorPilot window and try again.`
+        : `CreatorPilot could not start the Google callback: ${error.message}`;
+      finish(new Error(message));
+    });
+
+    server.listen(GOOGLE_OAUTH_PORT, '127.0.0.1', async () => {
+      const oauth = new google.auth.OAuth2(clientId, clientSecret, GOOGLE_OAUTH_REDIRECT_URI);
+      const authUrl = oauth.generateAuthUrl({
+        access_type: 'offline',
+        prompt: 'consent',
+        scope: SCOPES,
+        state: expectedState,
+      });
       try {
         await shell.openExternal(authUrl);
       } catch (error) {
@@ -76,4 +98,4 @@ function escapeHtml(value) {
   })[character]);
 }
 
-module.exports = { connectYouTube };
+module.exports = { connectYouTube, GOOGLE_OAUTH_REDIRECT_URI };

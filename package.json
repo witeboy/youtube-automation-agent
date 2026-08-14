@@ -1,6 +1,6 @@
 {
   "name": "youtube-automation-agent",
-  "version": "2.4.1",
+  "version": "2.4.2",
   "description": "BYO-key desktop studio for automated YouTube video creation and publishing",
   "productName": "CreatorPilot",
   "main": "desktop/main.js",

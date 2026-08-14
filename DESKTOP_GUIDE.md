@@ -36,15 +36,23 @@ Local video generation works without a YouTube connection. To upload and schedul
 1. Open <https://console.cloud.google.com/> and create or select a project.
 2. Enable **YouTube Data API v3** and **YouTube Analytics API**.
 3. Configure the OAuth consent screen.
-4. Create an OAuth Client ID with application type **Desktop app**.
+4. Create an OAuth Client ID with application type **Desktop app** (recommended).
 5. Paste the Client ID and Client Secret into CreatorPilot Settings.
 6. Select **Connect channel** and approve access in the browser.
+
+If you created a **Web application** OAuth client instead, add this exact value under **Authorized redirect URIs** in Google Cloud before connecting:
+
+```text
+http://127.0.0.1:53682/oauth2callback
+```
+
+The scheme, IP address, port, path, and lack of trailing slash must match exactly. CreatorPilot now uses this stable callback instead of choosing a random port, so either a Desktop client or a correctly configured Web client can connect. A Google `redirect_uri_mismatch` error means the OAuth client type or its registered URI does not match this value.
 
 The app requests upload, read-only channel, and read-only analytics scopes. New uploads default to **private** unless you deliberately change the setting.
 
 ## Install and use
 
-1. Run `CreatorPilot-Setup-2.4.1.exe`.
+1. Run `CreatorPilot-Setup-2.4.2.exe`.
 2. Open CreatorPilot and go to **Settings**.
 3. Add Cheaper Inference and AI33 Pro keys, then test each connection.
 4. Add channel defaults. Save; the app restarts to load the providers.

@@ -2,7 +2,7 @@ const path = require('path');
 const axios = require('axios');
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const { SecureStore } = require('./secure-store');
-const { connectYouTube } = require('./youtube-oauth');
+const { connectYouTube, GOOGLE_OAUTH_REDIRECT_URI } = require('./youtube-oauth');
 
 let mainWindow;
 let agent;
@@ -33,7 +33,7 @@ function applySettings(settings) {
     youtube: settings.youtube.clientId && settings.youtube.clientSecret ? {
       client_id: settings.youtube.clientId,
       client_secret: settings.youtube.clientSecret,
-      redirect_uris: ['http://127.0.0.1'],
+      redirect_uris: [GOOGLE_OAUTH_REDIRECT_URI],
     } : undefined,
     channel: settings.channel,
   });
@@ -83,7 +83,10 @@ async function createWindow(port) {
 }
 
 function registerIpc() {
-  ipcMain.handle('settings:get', () => store.publicView());
+  ipcMain.handle('settings:get', () => ({
+    ...store.publicView(),
+    oauth: { redirectUri: GOOGLE_OAUTH_REDIRECT_URI },
+  }));
   ipcMain.handle('settings:save', async (_event, incoming) => {
     const settings = store.update(incoming);
     applySettings(settings);
